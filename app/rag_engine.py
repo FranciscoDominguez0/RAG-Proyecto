@@ -2,7 +2,8 @@ import os
 from pathlib import Path
 from typing import List, Dict, Any, Tuple, Generator
 
-import ollama
+from openai import OpenAI
+from dotenv import load_dotenv
 from pypdf import PdfReader
 from docx import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -14,8 +15,16 @@ from app.vector_store import (
     get_stats
 )
 
+load_dotenv()
+
 DOCS_FOLDER = "./documentos"
-LLM_MODEL = "llama3.2"
+LLM_MODEL = "deepseek-chat"
+
+client = OpenAI(
+    api_key=os.getenv("DEEPSEEK_API_KEY"),
+    base_url="https://api.deepseek.com"
+)
+
 CHUNK_SIZE = 800
 CHUNK_OVERLAP = 100
 
@@ -75,12 +84,12 @@ def load_and_index_documents(force_reload: bool = False) -> Dict[str, Any]:
 
     if collection_has_docs() and not force_reload:
         stats = get_stats()
-        print(f"[INDEX] Coleccion ya existe con {stats.get('total_chunks')} chunks. Saltando indexacion.")
+        print(f"[INDEX] Coleccion ya existe con {stats.get('total_chunks')} chunks. Saltando.")
         return stats
 
     if not os.path.exists(DOCS_FOLDER):
         os.makedirs(DOCS_FOLDER)
-        print(f"[INDEX] Carpeta '{DOCS_FOLDER}' creada. Agrega documentos y recarga.")
+        print(f"[INDEX] Carpeta '{DOCS_FOLDER}' creada.")
         return {"total_chunks": 0, "files_processed": 0}
 
     supported = {".pdf", ".docx", ".txt"}
@@ -120,7 +129,7 @@ def load_and_index_documents(force_reload: bool = False) -> Dict[str, Any]:
     print(f"[INDEX] Total chunks: {len(all_chunks)}")
 
     if all_chunks:
-        print("[INDEX] Generando embeddings...")
+        print("[INDEX] Generando embeddings con Ollama...")
         try:
             add_documents_to_store(all_chunks, all_meta)
             print("[INDEX] Guardado en ChromaDB OK")
@@ -153,24 +162,26 @@ def stream_response(question: str, retrieved: List[Dict[str, Any]]) -> Generator
 
     context = build_context(retrieved)
     prompt = SYSTEM_PROMPT.format(context=context, question=question)
-    print("[RAG] Iniciando stream con Ollama...")
+    print("[RAG] Iniciando stream con DeepSeek...")
 
     try:
-        for chunk in ollama.chat(
+        stream = client.chat.completions.create(
             model=LLM_MODEL,
             messages=[{"role": "user", "content": prompt}],
-            stream=True
-        ):
-            token = chunk["message"]["content"]
+            stream=True,
+            max_tokens=1024,
+            temperature=0.3,
+        )
+        for chunk in stream:
+            token = chunk.choices[0].delta.content
             if token:
                 yield token
         print("[RAG] Stream completado OK")
     except Exception as e:
-        print(f"[RAG] ERROR en stream: {e}")
+        print(f"[RAG] ERROR en DeepSeek: {e}")
         yield f"\nError al generar respuesta: {str(e)}"
 
 
-# Mantener compatibilidad por si acaso
 def generate_rag_response(question: str) -> Tuple[str, List[Dict[str, Any]]]:
     retrieved = search_only(question)
     full = "".join(stream_response(question, retrieved))
