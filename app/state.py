@@ -2,7 +2,11 @@ import asyncio
 import reflex as rx
 from pydantic import BaseModel
 from typing import List, Dict, Any
-from app.rag_engine import load_and_index_documents, generate_rag_response
+from app.rag_engine import (
+    load_and_index_documents,
+    search_only,
+    stream_response
+)
 
 
 class ChatMessage(BaseModel):
@@ -64,19 +68,28 @@ class AppState(rx.State):
             return
 
         try:
-            answer, retrieved = await asyncio.to_thread(
-                generate_rag_response, question
-            )
+            # Buscar fragmentos relevantes (rapido)
+            retrieved = await asyncio.to_thread(search_only, question)
             sources = list({doc["metadata"].get("source", "") for doc in retrieved})
-            self.messages.append(ChatMessage(
-                role="assistant",
-                content=answer,
-                sources=sources
-            ))
+
+            # Agregar mensaje vacío y empezar a llenarlo con streaming
+            self.messages.append(ChatMessage(role="assistant", content="", sources=sources))
+            yield
+
+            # Stream token a token
+            def get_stream():
+                return list(stream_response(question, retrieved))
+
+            tokens = await asyncio.to_thread(get_stream)
+
+            for token in tokens:
+                self.messages[-1].content += token
+                yield
+
         except Exception as e:
             self.messages.append(ChatMessage(
                 role="assistant",
-                content=f"Error al generar respuesta: {str(e)}. Verifica que Ollama este corriendo."
+                content=f"Error: {str(e)}. Verifica que Ollama este corriendo."
             ))
 
         self.is_loading = False

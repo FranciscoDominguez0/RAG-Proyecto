@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Generator
 
 import ollama
 from pypdf import PdfReader
@@ -15,7 +15,7 @@ from app.vector_store import (
 )
 
 DOCS_FOLDER = "./documentos"
-LLM_MODEL = "llama3"
+LLM_MODEL = "llama3.2"
 CHUNK_SIZE = 800
 CHUNK_OVERLAP = 100
 
@@ -27,7 +27,7 @@ Reglas:
 2. No inventes datos ni uses conocimiento externo.
 3. Si la informacion no esta en el contexto responde exactamente:
    "No encontre informacion suficiente en la base de conocimiento para responder esta consulta."
-4. Lenguaje profesional y tecnico. Precisión sobre extension.
+4. Lenguaje profesional y tecnico. Precision sobre extension.
 
 CONTEXTO:
 {context}
@@ -80,7 +80,7 @@ def load_and_index_documents(force_reload: bool = False) -> Dict[str, Any]:
 
     if not os.path.exists(DOCS_FOLDER):
         os.makedirs(DOCS_FOLDER)
-        print(f"[INDEX] Carpeta '{DOCS_FOLDER}' no existia, fue creada. Agrega documentos y recarga.")
+        print(f"[INDEX] Carpeta '{DOCS_FOLDER}' creada. Agrega documentos y recarga.")
         return {"total_chunks": 0, "files_processed": 0}
 
     supported = {".pdf", ".docx", ".txt"}
@@ -101,7 +101,7 @@ def load_and_index_documents(force_reload: bool = False) -> Dict[str, Any]:
             print(f"[INDEX] Procesando: {filepath.name}")
             text = extract_text(str(filepath))
             if not text.strip():
-                print(f"[INDEX] ADVERTENCIA: {filepath.name} no tiene texto extraible")
+                print(f"[INDEX] ADVERTENCIA: {filepath.name} sin texto extraible")
                 continue
             chunks = split_text(text)
             for i, chunk in enumerate(chunks):
@@ -112,20 +112,20 @@ def load_and_index_documents(force_reload: bool = False) -> Dict[str, Any]:
                     "file_type": filepath.suffix.lower()
                 })
             processed += 1
-            print(f"[INDEX] {filepath.name} procesado OK — {len(chunks)} chunks")
+            print(f"[INDEX] {filepath.name} OK — {len(chunks)} chunks")
         except Exception as e:
             print(f"[INDEX] ERROR procesando {filepath.name}: {e}")
             continue
 
-    print(f"[INDEX] Total chunks a embedear: {len(all_chunks)}")
+    print(f"[INDEX] Total chunks: {len(all_chunks)}")
 
     if all_chunks:
-        print("[INDEX] Iniciando generacion de embeddings con Ollama...")
+        print("[INDEX] Generando embeddings...")
         try:
             add_documents_to_store(all_chunks, all_meta)
-            print("[INDEX] Embeddings generados y guardados en ChromaDB OK")
+            print("[INDEX] Guardado en ChromaDB OK")
         except Exception as e:
-            print(f"[INDEX] ERROR al guardar en vector store: {e}")
+            print(f"[INDEX] ERROR en vector store: {e}")
             raise
 
     return {"total_chunks": len(all_chunks), "files_processed": processed}
@@ -139,31 +139,39 @@ def build_context(documents: List[Dict[str, Any]]) -> str:
     return "\n\n---\n\n".join(parts)
 
 
-def generate_rag_response(question: str) -> Tuple[str, List[Dict[str, Any]]]:
-    print(f"[RAG] Pregunta recibida: {question}")
-    print("[RAG] Buscando documentos similares...")
+def search_only(question: str) -> List[Dict[str, Any]]:
+    print(f"[RAG] Buscando fragmentos para: {question}")
     retrieved = search_similar_documents(query=question, n_results=5)
-    print(f"[RAG] Fragmentos recuperados: {len(retrieved)}")
+    print(f"[RAG] Fragmentos encontrados: {len(retrieved)}")
+    return retrieved
 
+
+def stream_response(question: str, retrieved: List[Dict[str, Any]]) -> Generator[str, None, None]:
     if not retrieved:
-        return (
-            "No encontre informacion suficiente en la base de conocimiento "
-            "para responder esta consulta.",
-            []
-        )
+        yield "No encontre informacion suficiente en la base de conocimiento para responder esta consulta."
+        return
 
     context = build_context(retrieved)
     prompt = SYSTEM_PROMPT.format(context=context, question=question)
-    print("[RAG] Enviando prompt a Ollama (llama3)...")
+    print("[RAG] Iniciando stream con Ollama...")
 
     try:
-        response = ollama.chat(
+        for chunk in ollama.chat(
             model=LLM_MODEL,
-            messages=[{"role": "user", "content": prompt}]
-        )
-        print("[RAG] Respuesta recibida de Ollama OK")
+            messages=[{"role": "user", "content": prompt}],
+            stream=True
+        ):
+            token = chunk["message"]["content"]
+            if token:
+                yield token
+        print("[RAG] Stream completado OK")
     except Exception as e:
-        print(f"[RAG] ERROR llamando a Ollama: {e}")
-        raise
+        print(f"[RAG] ERROR en stream: {e}")
+        yield f"\nError al generar respuesta: {str(e)}"
 
-    return response["message"]["content"], retrieved
+
+# Mantener compatibilidad por si acaso
+def generate_rag_response(question: str) -> Tuple[str, List[Dict[str, Any]]]:
+    retrieved = search_only(question)
+    full = "".join(stream_response(question, retrieved))
+    return full, retrieved
