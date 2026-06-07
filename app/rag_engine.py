@@ -34,6 +34,7 @@ Responde la pregunta basandote en el contexto proporcionado.
 Si el contexto menciona el tema aunque sea de forma indirecta, elabora una respuesta profesional y completa.
 Solo di que no tienes informacion si el tema no aparece en absoluto en el contexto.
 Responde exactamente lo que se pregunta, sin agregar temas adicionales no solicitados.
+No uses notas al pie ni referencias como "(Fragmento N, nota al pie X)".
 
 CONTEXTO:
 {context}
@@ -139,9 +140,9 @@ def load_and_index_documents(force_reload: bool = False) -> Dict[str, Any]:
 
 def build_context(documents: List[Dict[str, Any]]) -> str:
     parts = []
-    for i, doc in enumerate(documents, 1):
+    for doc in documents:
         source = doc["metadata"].get("source", "Desconocido")
-        parts.append(f"[Fragmento {i} | {source}]\n{doc['content'].strip()}")
+        parts.append(f"Fuente: {source}\n{doc['content'].strip()}")
     return "\n\n---\n\n".join(parts)
 
 

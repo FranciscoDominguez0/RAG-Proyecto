@@ -2,11 +2,7 @@ import asyncio
 import reflex as rx
 from pydantic import BaseModel
 from typing import List, Dict, Any
-from app.rag_engine import (
-    load_and_index_documents,
-    search_only,
-    stream_response
-)
+from app.rag_engine import load_and_index_documents, search_only, stream_response
 
 
 class ChatMessage(BaseModel):
@@ -18,6 +14,7 @@ class ChatMessage(BaseModel):
 class AppState(rx.State):
     messages: List[ChatMessage] = []
     user_input: str = ""
+    input_key: int = 0
     is_loading: bool = False
     is_indexing: bool = False
     db_ready: bool = False
@@ -34,13 +31,10 @@ class AppState(rx.State):
             self.db_stats = stats
             if stats.get("total_chunks", 0) > 0:
                 self.db_ready = True
-                self.status_message = (
-                    f"{stats.get('files_processed', 0)} archivo(s) — "
-                    f"{stats['total_chunks']} fragmentos indexados"
-                )
+                self.status_message = f"{stats.get('files_processed', 0)} archivo(s) — {stats['total_chunks']} fragmentos"
             else:
                 self.db_ready = False
-                self.status_message = "Sin documentos. Agrega archivos a /documentos y recarga."
+                self.status_message = "Sin documentos en /documentos"
         except Exception as e:
             self.db_ready = False
             self.status_message = f"Error: {str(e)}"
@@ -52,45 +46,31 @@ class AppState(rx.State):
         question = self.user_input.strip()
         if not question or self.is_loading:
             return
-
-        self.messages.append(ChatMessage(role="user", content=question))
         self.user_input = ""
+        self.input_key += 1
         self.is_loading = True
+        self.messages.append(ChatMessage(role="user", content=question))
         yield
 
         if not self.db_ready:
-            self.messages.append(ChatMessage(
-                role="assistant",
-                content="La base de conocimiento no esta disponible. Verifica que existan documentos en /documentos."
-            ))
+            self.messages.append(ChatMessage(role="assistant",
+                content="Base de conocimiento no disponible. Verifica los documentos en /documentos."))
             self.is_loading = False
             yield
             return
 
         try:
-            # Buscar fragmentos relevantes (rapido)
             retrieved = await asyncio.to_thread(search_only, question)
-            sources = list({doc["metadata"].get("source", "") for doc in retrieved})
-
-            # Agregar mensaje vacío y empezar a llenarlo con streaming
+            sources = list({d["metadata"].get("source", "") for d in retrieved})
             self.messages.append(ChatMessage(role="assistant", content="", sources=sources))
             yield
-
-            # Stream token a token
-            def get_stream():
-                return list(stream_response(question, retrieved))
-
-            tokens = await asyncio.to_thread(get_stream)
-
+            tokens = await asyncio.to_thread(lambda: list(stream_response(question, retrieved)))
             for token in tokens:
                 self.messages[-1].content += token
                 yield
-
         except Exception as e:
-            self.messages.append(ChatMessage(
-                role="assistant",
-                content=f"Error: {str(e)}. Verifica que Ollama este corriendo."
-            ))
+            self.messages.append(ChatMessage(role="assistant",
+                content=f"Error: {str(e)}"))
 
         self.is_loading = False
         yield
@@ -111,17 +91,14 @@ class AppState(rx.State):
     @rx.event
     async def reload_documents(self):
         self.is_indexing = True
-        self.status_message = "Recargando documentos..."
+        self.status_message = "Recargando..."
         yield
         try:
             stats = await asyncio.to_thread(load_and_index_documents, True)
             self.db_stats = stats
             if stats.get("total_chunks", 0) > 0:
                 self.db_ready = True
-                self.status_message = (
-                    f"{stats.get('files_processed', 0)} archivo(s) — "
-                    f"{stats['total_chunks']} fragmentos indexados"
-                )
+                self.status_message = f"{stats.get('files_processed', 0)} archivo(s) — {stats['total_chunks']} fragmentos"
             else:
                 self.db_ready = False
                 self.status_message = "No se encontraron documentos."
