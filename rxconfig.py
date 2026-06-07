@@ -7,4 +7,8 @@ config = rx.Config(
             theme=rx.theme(appearance="dark", accent_color="blue")
         )
     ],
+    # Excluir carpetas que cambian durante runtime
+    tailwind=None,
+    backend_only=False,
+    env=rx.Env.PROD,  # desactiva hot-reload
 )
